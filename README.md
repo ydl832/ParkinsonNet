@@ -37,4 +37,4 @@ The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disea
 </table>
 
 
-![Demo Video](Show_video.gif)
+![Demo Video](demo/Show_video.gif)
