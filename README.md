@@ -24,14 +24,14 @@ The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disea
 <table>
   <tr>
     <td align="center">
-      <img src="demo/gait_2.gif" width="260"/><br/>
-      <b>Gait (Score 2)</b>
+      <img src="demo/gait_0_3d.gif" width="260"/><br/>
+      <b>Gait (Score 0)</b>
     <td align="center">
       <img src="demo/gait_1.gif" width="260"/><br/>
       <b>Gait (score 1)</b>
     <td align="center">
-      <img src="demo/gait.gif" width="260"/><br/>
-      <b>Gait (score 0)</b>
+      <img src="demo/gait_2.gif" width="260"/><br/>
+      <b>Gait (score 2)</b>
     </td>
   </tr>
 </table>
