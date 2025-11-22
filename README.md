@@ -36,19 +36,5 @@ The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disea
   </tr>
 </table>
 
-<table>
-  <tr>
-    <td align="center">
-      <img src="demo/Leg_agility.gif" width="260"/><br/>
-      <b>Leg agility</b>
-    <td align="center">
-      <img src="demo/arising_from_chair.gif" width="260"/><br/>
-      <b>Arising from Chair</b>
-    <td align="center">
-      <img src="demo/pose_stability.gif" width="260"/><br/>
-      <b>Postural Stability</b>
-    </td>
-  </tr>
-</table>
 
 ![Demo Video](Show_video.gif)
