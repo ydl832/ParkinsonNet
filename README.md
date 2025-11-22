@@ -38,7 +38,7 @@ The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disea
 <table>
   <tr>
     <td align="center">
-      <img src="demo/gait_0.gif" width="260"/><br/>
+      <img src="demo/gait.gif" width="260"/><br/>
       <b>Gait (Score 0)</b>
   </tr>
 </table>
