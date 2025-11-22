@@ -2,28 +2,21 @@
 The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disease Motor Symptom Severity" is coming.
 
 <table>
-  <tr>
     <td align="center">
-      <img src="demo/finger_tapping.gif" width="260"/><br/>
-      <b>Finger Tapping</b>
+      <img src="demo/0_3d.gif" width="260"/><br/>
+      <b>Finger Tapping (Score 0)</b>
     </td>
     <td align="center">
-      <img src="demo/hand_movements.gif" width="260"/><br/>
-      <b>Hand Movements</b>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="demo/Pronation-supination.gif" width="260"/><br/>
-      <b>Pronation-Supination</b>
-    </td>
-    <td align="center">
-      <img src="demo/postural_tremor.gif" width="260"/><br/>
-      <b>Postural Tremor</b>
+      <img src="demo/1_3d.gif" width="260"/><br/>
+      <b>Finger Tapping (Score 1)</b>
     </td>
       <td align="center">
-      <img src="demo/rest_tremor_hand.gif" width="260"/><br/>
-      <b>Rest Tremor (hand)</b>
+      <img src="demo/2_3d.gif" width="260"/><br/>
+      <b>Finger Tapping (Score 2)</b>
+    </td>
+      <td align="center">
+      <img src="demo/3_3d.gif" width="260"/><br/>
+      <b>Finger Tapping (Score 3)</b>
     </td>
   </tr>
 </table>
