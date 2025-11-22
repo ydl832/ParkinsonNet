@@ -31,6 +31,18 @@ The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disea
 <table>
   <tr>
     <td align="center">
+      <img src="demo/gait.gif" width="260"/><br/>
+      <b>Gait from PDG3D</b>
+    <td align="center">
+      <img src="demo/gait.gif" width="260"/><br/>
+      <b>Gait</b>
+    </td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center">
       <img src="demo/Leg_agility.gif" width="260"/><br/>
       <b>Leg agility</b>
     <td align="center">
