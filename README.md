@@ -39,7 +39,7 @@ The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disea
   <tr>
     <td align="center">
       <img src="demo/gait.gif" width="260"/><br/>
-      <b>Gait (Score 0)</b>
+      <b>Gait from PDG3D (Score 0)</b>
   </tr>
 </table>
 
