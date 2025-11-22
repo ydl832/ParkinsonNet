@@ -31,7 +31,7 @@ Videos are labeled with MDS-UPDRS severity scores ranging from:
 </table>
 
 **Gait Analysis**  
-Videos are labeled with MDS-UPDRS Part III gait item scores (0–4):  
+Videos are labeled with MDS-UPDRS Part III gait item scores (0–2):  
 - **0** – Normal  （No problems.）
 - **1** – Slight (Independent walking with minor gait impairment.)  
 - **2** – Mild (Independent walking but with substantial gait impairment)
