@@ -1,7 +1,7 @@
 # ParkinsonNet
 The code for "ParkinsonNet: Generalized Network for Estimating Parkinson's Disease Motor Symptom Severity" is coming.
 
-The following examples are provided to offer an intuitive understanding of how skeleton information is leveraged to estimate the severity of motor symptoms in Parkinson’s disease (PD). This work primarily focuses on two representative tasks: Finger Tapping and Gait Analysis
+The following examples are provided to offer an intuitive understanding of how skeleton information is leveraged to estimate the severity of motor symptoms in Parkinson’s disease (PD).
 
 **Finger Tapping**  
 Videos are labeled with MDS-UPDRS severity scores ranging from:  
