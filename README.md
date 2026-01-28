@@ -57,5 +57,3 @@ Videos are labeled with MDS-UPDRS Part III gait item scores (0–2):
       <b>Gait from PDG3D</b>
   </tr>
 </table>
-
-![Demo Video](demo/Show_video.gif)
