@@ -1,0 +1,1181 @@
+#!/usr/bin/env python
+import torch.optim as optim
+import torch
+import functools
+import sys
+import json
+# import adamod
+import inspect
+import torch.nn as nn
+from torch.utils.data import DataLoader, ConcatDataset, WeightedRandomSampler
+from sacred import Experiment
+from sacred.utils import apply_backspaces_and_linefeeds
+from sacred.observers import MongoObserver
+import configargparse as argparse
+from sklearn.metrics import confusion_matrix, roc_curve, auc
+from arg_types import arg_boolean, arg_dict
+import argparse
+import os
+import time
+import adamod
+import numpy as np
+import yaml
+import pickle
+import networkx as nx
+from tensorboardX import SummaryWriter
+from collections import OrderedDict
+# torch
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.autograd import Variable
+# mongodb
+import os
+import random
+from OLoss import CrossEntropyLoss, ordinal
+from text_encoder import TextEncoder
+from collections import Counter
+
+incidence = np.array([])
+
+name_exp = 'prova20'
+writer = SummaryWriter('./' + name_exp)
+use_gpu = True
+torch.cuda.set_device('cuda:3')
+#os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+
+# parameter priority: command line > config > default
+def get_parser():
+    parser = argparse.ArgumentParser(
+        description='Spatial Temporal Graph Convolution Network')
+    parser.add_argument('--val_split', type=int, default=0.2)
+    parser.add_argument('--data_dir', type=str)
+    parser.add_argument('--log_dir', type=str,
+                        default="./checkpoints/" + name_exp)
+    parser.add_argument('--exp_name', type=str, default=name_exp)
+    parser.add_argument('--num_workers', type=int, default=10)
+    parser.add_argument('--clip_grad_norm', type=float, default=0.5)
+    parser.add_argument('--writer_enabled', type=arg_boolean, default=True)
+    parser.add_argument('--gcn0_flag', type=arg_boolean, default=False)
+    parser.add_argument('--scheduling_lr', type=arg_boolean, default=True)
+    parser.add_argument('--complete', type=arg_boolean, default=True)
+    parser.add_argument('--bn_flag', type=arg_boolean, default=True)
+    parser.add_argument('--accumulating_gradients', type=arg_boolean, default=False)
+    parser.add_argument('--optimize_every', type=int, default=2)
+    parser.add_argument('--clip', type=arg_boolean, default=False)
+    parser.add_argument('--validation_split', type=arg_boolean, default=False)
+    parser.add_argument('--data_mirroring', type=arg_boolean, default=False)
+    parser.add_argument('--local_rank', type=int, default=0)
+
+    parser.add_argument(
+        '--work-dir',
+        default='./' + name_exp,
+        help='the work folder for storing results')
+    parser.add_argument(
+        '--config',
+        default='./train_c3d.yaml',
+        help='path to the configuration file')
+
+    # processor
+    parser.add_argument(
+        '--phase', default='train', help='must be train or test')
+    parser.add_argument(
+        '--save_score',
+        type=str2bool,
+        default=True,
+        help='if ture, the classification score will be stored')
+
+    # visulize and debug
+    parser.add_argument(
+        '--seed', type=int, default=13696642, help='random seed for pytorch')
+    parser.add_argument(
+        '--training', type=str2bool, default=True, help='training or testing mode')
+
+    parser.add_argument(
+        '--log-interval',
+        type=int,
+        default=50,
+        help='the interval for printing messages (#iteration)')
+    parser.add_argument(
+        '--save-interval',
+        type=int,
+        default=10,
+        help='the interval for storing models (#iteration)')
+    parser.add_argument(
+        '--eval-interval',
+        type=int,
+        default=1,
+        help='the interval for evaluating models (#iteration)')
+    parser.add_argument(
+        '--print-log',
+        type=str2bool,
+        default=True,
+        help='print logging or not')
+    parser.add_argument(
+        '--show-topk',
+        type=int,
+        default=[1, 2],
+        nargs='+',
+        help='which Top K accuracy will be shown')
+
+    # feeder
+    parser.add_argument(
+        '--feeder', default='feeder.Feeder', help='data loader will be used')
+    parser.add_argument(
+        '--feeder_augmented', default='feeder.feeder_augmented', help='data loader will be used')
+
+    parser.add_argument(
+        '--num-worker',
+        type=int,
+        default=10,
+        help='the number of worker for data loader')
+    parser.add_argument(
+        '--train-feeder-args',
+        default=dict(),
+        help='the arguments of data loader for training')
+#    parser.add_argument(
+#        '--compare-feeder-args',
+#        default=dict(),
+#        help='the arguments of data loader for compare')        
+    parser.add_argument(
+        '--test-feeder-args',
+        default=dict(),
+        help='the arguments of data loader for test')
+
+#    parser.add_argument(
+#        '--train_feeder_args_new',
+#        default=dict(),
+#        help='the arguments of data loader for training')
+#    parser.add_argument(
+#        '--test_feeder_args_new',
+#        default=dict(),
+#        help='the arguments of data loader for test')
+    # model
+    
+    parser.add_argument('--model', default=None, help='the model will be used')
+    parser.add_argument(
+        '--model-args',
+        type=dict,
+        default=dict(),
+        help='the arguments of model')
+    parser.add_argument(
+        '--weights',
+        default=None,
+        help='the weights for network initialization')
+    parser.add_argument(
+        '--ignore-weights',
+        type=str,
+        default=[],
+        nargs='+',
+        help='the name of weights which will be ignored in the initialization')
+
+    # optim
+    parser.add_argument(
+        '--scheduler', type=float, default=0, help='initial learning rate')
+    parser.add_argument(
+        '--base-lr', type=float, default=0.1, help='initial learning rate')
+    parser.add_argument(
+        '--step',
+        type=int,
+        default=[20, 40, 60],
+        nargs='+',
+        help='the epoch where optimizer reduce the learning rate')
+    parser.add_argument(
+        '--device',
+        type=int,
+        default=0,
+        nargs='+',
+        help='the indexes of GPUs for training or testing')
+    parser.add_argument('--optimizer', default='SGD', help='type of optimizer')
+    parser.add_argument(
+        '--nesterov', type=str2bool, default=False, help='use nesterov or not')
+    parser.add_argument(
+        '--batch-size', type=int, default=256, help='training batch size')
+    parser.add_argument(
+        '--test-batch-size', type=int, default=256, help='test batch size')
+    parser.add_argument(
+        '--start-epoch',
+        type=int,
+        default=0
+        ,
+        help='start training from which epoch')
+    parser.add_argument(
+        '--num_epoch',
+        type=int,
+        default=120,
+        help='stop training in which epoch')
+    parser.add_argument(
+        '--weight-decay',
+        type=float,
+        default=0.0005,
+        help='weight decay for optimizer')
+    parser.add_argument(
+        '--display_by_category',
+        type=str2bool,
+        default=False,
+        help='if ture, the top k accuracy by category  will be displayed')
+    parser.add_argument(
+        '--display_recall_precision',
+        type=str2bool,
+        default=False,
+        help='if ture, recall and precision by category  will be displayed')
+
+    return parser
+
+
+class Processor():
+    """ 
+        Processor for Skeleton-based Action Recgnition
+    """
+
+    def __init__(self, arg):
+        self.arg = arg
+        self.save_arg()
+        #self.load_data()
+        #self.load_model()
+        #self.load_optimizer()
+        self.seen = 0
+        #self.best_accuracy = 0
+        self.params = arg
+        self.graph = nx.Graph()
+        self.num_joints = 17
+        #self.best_epoch = 0
+
+    def save_checkpoint(self, path, filename, epoch):
+        os.makedirs(path, exist_ok=True)
+
+        try:
+            torch.save({'epoch': epoch,
+                        'best_epoch': self.best_epoch,
+                        'best_epoch_score': self.best_accuracy,
+                        'model_state_dict': self.model.state_dict(),
+                        'optimizer_state_dict': self.optimizer.state_dict()
+                        }, os.path.join(path, filename))
+
+        except Exception as e:
+            print("An error occurred while saving the checkpoint:")
+            print(e)
+
+    def load_checkpoint(self, path, filename):
+        ckpt_path = os.path.join(path, filename)
+
+        checkpoint = torch.load(ckpt_path)
+        self.epoch = checkpoint['epoch']
+        self.best_epoch = checkpoint['best_epoch']
+        self.best_epoch_score = checkpoint['best_epoch_score']
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    def json_params(self, savedir):
+        try:
+            dict_params = vars(self.params)
+            json_path = os.path.join(savedir, "params.json")
+
+            with open(json_path, 'w') as fp:
+                json.dump(dict_params, fp)
+        except Exception as e:
+            print("An error occurred while saving parameters into JSON:")
+            print(e)
+
+    def load_data(self, fold):
+
+#        base_path = "/home/data/yande/pd/data(test)/poseformerv2_processing/PD_center_False/"
+#        train_path = os.path.join(base_path, "PD_train.pkl")
+#        test_path = os.path.join(base_path, "PD_test.pkl")
+        
+        base_path = "/home/data/yande/pd/data(150)/poseformerv2_processing/PD_center_False/"
+        train_path = os.path.join(base_path, f"PD_train_{fold}.pkl")
+        val_path = os.path.join(base_path, f"PD_validation_{fold}.pkl")
+        test_path = os.path.join(base_path, f"PD_test_{fold}.pkl")
+
+        train_feeder_args = {
+            'data_path': train_path,
+            'random_move': True,
+            'random_noise':False,
+            'axis_mask':False,
+            'random_shift':False,
+            'joint_dropout': False,
+            'random_rotation': False,
+            'mirroring': True,
+            'normalization': False,
+            'vel': True
+        }
+
+        val_feeder_args = {
+            'data_path': val_path,
+            'normalization': False,
+            'vel': True
+        }
+        
+        test_feeder_args = {
+            'data_path': test_path,
+            'vel': True,
+            'normalization': False
+        }
+
+        Feeder = import_class(self.arg.feeder)
+
+        self.data_loader = dict()
+
+
+        #self.trainLoader = Feeder(**self.arg.train_feeder_args)
+        #self.compareLoader = Feeder(**self.arg.compare_feeder_args)
+        #self.testLoader = Feeder(**self.arg.test_feeder_args)
+        #print('trainLoader=testLoader:',self.trainLoader == self.testLoader)
+#        if (arg.validation_split):
+
+        self.trainset = Feeder(**train_feeder_args)
+        self.valset = Feeder(**val_feeder_args)
+        self.testset = Feeder(**test_feeder_args)
+        
+#        combined_dataset = ConcatDataset([self.trainset, self.valset])
+#
+#        val_size = int(0.2 * len(combined_dataset))
+#        self.trainset_1, self.valset_1 = torch.utils.data.random_split(combined_dataset, [len(combined_dataset) - val_size, val_size])
+        
+        print("Train size: ", len(self.trainset))
+        print("Val size: ", len(self.valset))
+        print("Test size: ", len(self.testset))
+
+        # FIX ME SHUFFLE
+        train_labels = []
+        for i in range(len(self.trainset)):
+            _, label, _ = self.trainset[i]  #
+            train_labels.append(label)
+        class_sample_counts = np.bincount(train_labels)  # 
+        num_samples = len(train_labels)  # 
+        weights = 1. / class_sample_counts
+        samples_weights = weights[train_labels]
+        sampler = WeightedRandomSampler(weights=samples_weights, num_samples=num_samples, replacement=True)
+
+        if self.arg.phase == 'train':
+            self.data_loader['train'] = torch.utils.data.DataLoader(
+                dataset=self.trainset,
+                batch_size=self.arg.batch_size,
+                #shuffle=True,
+                num_workers=self.arg.num_worker, sampler=sampler)
+                
+        self.data_loader['val'] = torch.utils.data.DataLoader(
+            dataset=self.valset,
+            batch_size=self.arg.test_batch_size,
+            shuffle=True,
+            num_workers=self.arg.num_worker)
+
+        self.data_loader['test'] = torch.utils.data.DataLoader(
+            dataset=self.testset,
+            batch_size=self.arg.test_batch_size,
+            shuffle=False,
+            num_workers=self.arg.num_worker)
+        
+    def load_model(self):
+        output_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.output_device = output_device
+        Model = import_class(self.arg.model)
+        self.model = Model(**self.arg.model_args, device=self.output_device).cuda(output_device)
+        self.loss_ce = nn.CrossEntropyLoss().to(output_device)
+        self.loss_sm = CrossEntropyLoss().to(output_device)
+        self.text_encoder = TextEncoder().to(output_device)
+        #self.text_feature = torch.load('/home/yande/ST-TR/code/checkpoints/text_feature.pt').cuda(output_device)
+
+        if self.arg.weights:
+            self.print_log('Load weights from {}.'.format(self.arg.weights))
+            if '.pkl' in self.arg.weights:
+                with open(self.arg.weights, 'r') as f:
+                    weights = pickle.load(f)
+            else:
+                weights = torch.load(self.arg.weights)
+
+
+            weights = OrderedDict(
+                [[k.split('module.')[-1],
+                  v.cuda(output_device)] for k, v in weights.items()])
+
+            for w in self.arg.ignore_weights:
+                if weights.pop(w, None) is not None:
+                    self.print_log('Sucessfully Remove Weights: {}.'.format(w))
+                else:
+                    self.print_log('Can Not Remove Weights: {}.'.format(w))
+
+            try:
+                self.model.load_state_dict(weights)
+#                self.model.fcn = nn.Conv1d(256, 4, kernel_size=1).cuda(output_device)
+            except:
+                state = self.model.state_dict()
+                diff = list(set(state.keys()).difference(set(weights.keys())))
+                print('Can not find these weights:')
+                for d in diff:
+                    print('  ' + d)
+                state.update(weights)
+                self.model.load_state_dict(state)
+                
+#                self.model.fcn = nn.Conv1d(256, 4, kernel_size=1).cuda(output_device)
+            
+#            freeze = True
+#            freeze_before_layer = 'backbone.2'
+#            for name, param in self.model.named_parameters():
+#                print(name)
+#                if freeze:
+#                   param.requires_grad = False
+#                if name.startswith('gcn0') or name.startswith('tcn0'):
+#                   param.requires_grad = False
+#                if name.startswith(freeze_before_layer):
+#                   freeze = False
+#                   param.requires_grad = True
+#                   
+#            for name, param in self.model.named_parameters():
+#                if param.requires_grad:
+#                    layer_name = name.split('.')[0]
+#                    if hasattr(self.model, layer_name):
+#                        layer = getattr(self.model, layer_name)
+#                        if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
+#                            nn.init.kaiming_normal_(layer.weight)
+#                            if layer.bias is not None:
+#                                nn.init.constant_(layer.bias, 0)
+#                    
+#
+#            frozen_layers = [name for name, param in self.model.named_parameters() if not param.requires_grad]
+#            print(frozen_layers)
+   
+        #self.model = nn.DataParallel(self.model)
+        
+    def load_optimizer(self):
+        if self.arg.optimizer == 'SGD':
+            self.optimizer = optim.SGD(
+                self.model.parameters(),
+                lr=self.arg.base_lr,
+                momentum=0.9,
+                nesterov=self.arg.nesterov,
+                weight_decay=self.arg.weight_decay)
+
+            optimor = optim.SGD
+        elif self.arg.optimizer == 'Adam':
+            self.optimizer = optim.Adam(
+                self.model.parameters(),
+                lr=self.arg.base_lr,
+                weight_decay=self.arg.weight_decay)
+        elif self.arg.optimizer == 'Adamod':
+            self.optimizer = adamod.AdaMod(self.model.parameters(), lr=self.arg.base_lr, beta3=0.999)
+            print("I am using Adamod")
+
+        else:
+            raise ValueError()
+
+    def save_arg(self):
+        # save arg
+        arg_dict = vars(self.arg)
+        if not os.path.exists(self.arg.work_dir):
+            os.makedirs(self.arg.work_dir)
+        with open('{}/config.yaml'.format(self.arg.work_dir), 'w') as f:
+            yaml.dump(arg_dict, f)
+
+    def adjust_learning_rate(self, epoch):
+        if self.arg.optimizer == 'SGD' or self.arg.optimizer == 'Adam' or self.arg.optimizer == 'Adamod':
+            lr = self.arg.base_lr
+
+            step = self.arg.step
+            
+#            lr = self.arg.base_lr * (1 + np.cos(np.pi * epoch / self.arg.num_epoch)) / 2
+            lr = self.arg.base_lr * (
+                        0.1 ** np.sum(epoch >= np.array(step)))
+
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+            return lr
+        else:
+            raise ValueError()
+
+    def print_time(self):
+        localtime = time.asctime(time.localtime(time.time()))
+        self.print_log("Local current time :  " + localtime)
+
+    def print_log(self, str, print_time=True):
+        if print_time:
+            localtime = time.asctime(time.localtime(time.time()))
+            str = "[ " + localtime + ' ] ' + str
+        print(str)
+        if self.arg.print_log:
+            with open('{}/log.txt'.format(self.arg.work_dir), 'a') as f:
+                print(str, file=f)
+
+    def record_time(self):
+        self.cur_time = time.time()
+        return self.cur_time
+
+    def split_time(self):
+        split_time = time.time() - self.cur_time
+        self.record_time()
+        return split_time
+    
+    def calculate_accuracy(self, outputs, targets):
+        probs = torch.sigmoid(outputs)
+        preds = torch.sum(probs > 0.5, dim=1)
+        accuracy = (preds == targets).float().mean()
+        return accuracy.item()
+
+    def train(self, epoch, save_model=True):
+        self.model.train()
+        self.text_encoder.train()
+        #self.print_log('Training epoch: {}'.format(epoch + 1))
+        loader = self.data_loader['train']
+        #loader_c = self.data_loader['comp']
+        lr = self.arg.base_lr
+        lr = self.adjust_learning_rate(epoch)
+        loss_value = []
+        conf_matrix_train = 0
+        train_total = 0
+        train_correct = 0
+        train_correct_1 = 0
+        self.record_time()
+        #class_total = list(0. for i in range(0, self.arg.model_args['num_class']+1))
+        timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
+
+        for batch_idx, (data, label, name) in enumerate(loader):
+            
+            data = Variable(
+                data.float().cuda(self.output_device), requires_grad=False)
+            label = Variable(
+                label.long().cuda(self.output_device), requires_grad=False)
+
+            timer['dataloader'] = timer['dataloader'] +self.split_time()
+            
+            output_vq, feature, output_se, output_se, commit_loss= self.model(data, label, name)
+
+            # Text encoder similarity
+            #text = ["Normal","Slight", "Mild"]
+            text = ["Normal", "Mild", "Severe"]
+            text_feature = self.text_encoder(text).cuda()
+            text_feature = text_feature/text_feature.norm(dim=-1, keepdim=True).cuda()
+            feature = feature/feature.norm(dim=-1, keepdim=True)
+            similarity = (100.0 * feature @ text_feature.t())#.softmax(dim=-1)
+            probs_sm = similarity.softmax(dim=-1)
+            _, preds_sm = torch.max(probs_sm, 1)
+            similarity = similarity.softmax(dim=-1) + output_vq.softmax(dim=-1)
+            loss_sm = self.loss_sm(similarity, label)
+#            # cumulative ordinal loss
+#            cumulative_probs = torch.sigmoid(output_od)
+#            preds_od = torch.sum(cumulative_probs > 0.5, dim=1).long()
+#            loss_od = ordinal(output_od,label)
+            
+#            cumulative_probs = torch.sigmoid(output_vq)
+#            preds_vq = torch.sum(cumulative_probs > 0.5, dim=1).long()
+#            loss_vq = ordinal(output_vq,label)
+#            
+            # conventional cross entropy loss
+            #_, preds_ce = torch.max(output_ce, 1)
+            _, preds_vq = torch.max(output_vq, 1)
+            
+            #loss_ce = self.loss_ce(output_ce,label)
+            loss_vq = self.loss_ce(output_vq,label)
+
+            loss = loss_vq + 0.1*loss_sm + 0.02*commit_loss 
+
+            preds = preds_vq
+
+            # backward
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            loss_value.append(loss.data.item())
+            
+            train_total = train_total + label.size(0)
+            train_correct = train_correct+(preds == label).sum().item()
+            train_correct_1 = train_correct_1+(preds_sm == label).sum().item()
+            acc = (train_correct / train_total) * 100
+            timer['model'] = timer['model'] + self.split_time()
+
+            info = {
+                'loss-Train': loss,
+                'accuracy-Train': acc,
+            }
+
+            # Print statistics every 20 batches
+            if (batch_idx + 1) % 60 == 0:
+                #print("Total samples seen so far: ", train_total)
+                #print("Here are the just predicted labels: ", preds)
+                #print("Here are the correct labels: ", label)
+
+                # Get training statistics.
+                stats_train = 'Training: Epoch [{}/{}], Loss: {}, Training Accuracy: {}, lr:{:.6f} '.format(epoch,
+                                                                                                           self.arg.num_epoch,
+                                                                                                           loss.item(),
+                                                                                                           acc, lr)
+                print('\n' + stats_train)
+
+                step = epoch * len(loader) + batch_idx
+
+                # Print tensorboard info
+                for tag, value in info.items():
+                    writer.add_scalar(tag, value, step)
+
+                for name, param in self.model.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        writer.add_scalar("gradients/" + name, param.grad.norm(2).item(), step)
+
+            # statistics
+#            if batch_idx % self.arg.log_interval == 0:
+#                self.print_log(
+#                    '\tBatch({}/{}) done. Loss: {:.4f}  lr:{:.6f}'.format(
+#                        batch_idx, len(loader), loss.data.item(), lr))
+            timer['statistics'] = timer['statistics']+ self.split_time()
+
+        # statistics of time consumption and loss
+        proportion = {
+            k: '{:02d}%'.format(int(round(v * 100 / sum(timer.values()))))
+            for k, v in timer.items()
+        }
+#        self.print_log(
+#            '\tMean training loss: {:.4f}.'.format(np.mean(loss_value)))
+#        self.print_log(
+#            '\tTime consumption: [Data]{dataloader}, [Network]{model}'.format(
+#                **proportion))
+
+        if True:
+            #print("saving!")
+            model_path = '{}/epoch{}_model.pt'.format(self.arg.work_dir,
+                                                      epoch + 1)
+            state_dict = self.model.state_dict()
+            weights = OrderedDict([[k.split('module.')[-1],
+                                    v.cpu()] for k, v in state_dict.items()])
+            torch.save(weights, model_path)
+        total_acc = ((train_correct + train_correct_1)/(train_total*2)) * 100
+        
+        return round(total_acc,3)
+
+    def val(self, epoch, save_score=False, loader_name=['val']):
+        self.model.eval()
+        self.text_encoder.eval()
+        #self.print_log('Eval epoch: {}'.format(epoch + 1))
+        val_correct = 0
+        conf_matrix_val = 0
+        val_total = 0
+        val_correct_1 = 0
+        val_total_1 = 0
+        class_correct = list(0. for i in range(0, self.arg.model_args['num_class']+1))
+        class_total = list(0. for i in range(0, self.arg.model_args['num_class']+1))
+        
+        for ln in loader_name:
+            loss_value = []
+            score_frag = []
+            for batch_idx, (data, label, name) in enumerate(self.data_loader[ln]):
+                
+                data = Variable(
+                    data.float().cuda(self.output_device),
+                    requires_grad=False)
+                label = Variable(
+                    label.long().cuda(self.output_device),
+                    requires_grad=False)
+                
+                with torch.no_grad():
+                    output_vq, feature, output_se, output_se, commit_loss = self.model(data, label, name)
+                    # text encoder similarity
+                    #text = ["Normal","Slight", "Mild"]
+                    text = ["Normal", "Mild", "Severe"]
+                    text_feature = self.text_encoder(text)
+                    feature = feature/feature.norm(dim=-1, keepdim=True)
+                    text_feature = text_feature/text_feature.norm(dim=-1, keepdim=True)
+                    similarity = (100.0 * feature @ text_feature.t())#.softmax(dim=-1)
+                    probs_sm = similarity.softmax(dim=-1)
+                    _, preds_sm = torch.max(probs_sm, 1)
+                    loss_sm = self.loss_sm(similarity, label)
+                    
+#                    # cumulative ordinal loss
+#                    cumulative_probs = torch.sigmoid(output_od)
+#                    preds_od = torch.sum(cumulative_probs > 0.5, dim=1).long()
+#                    loss_od = ordinal(output_od,label)
+
+#                    cumulative_probs = torch.sigmoid(output_vq)
+#                    preds_vq = torch.sum(cumulative_probs > 0.5, dim=1).long()
+#                    loss_vq = ordinal(output_vq,label)
+            
+                    # conventional cross entropy loss
+                    #_, preds_ce = torch.max(output_ce, 1)
+                    _, preds_vq = torch.max(output_vq, 1)
+                    #loss_ce = self.loss_ce(output_ce,label)
+                    loss_vq = self.loss_ce(output_vq,label)
+                    
+                    loss = loss_vq
+                    preds = preds_vq
+
+                score_frag.append(output_se.data.cpu().numpy())
+                loss_value.append(loss.data.item())
+
+                # accuracy calculation
+                val_total = val_total+label.size(0)
+                val_correct = val_correct+(preds == label).double().sum().item()
+                val_accuracy = (val_correct / val_total) * 100
+                                
+                val_total_1 = val_total_1+label.size(0)
+                val_correct_1 = val_correct_1+(preds_sm == label).double().sum().item()
+                val_accuracy_1 = (val_correct_1 / val_total_1) * 100
+
+                
+                c = (label == preds.squeeze()).float()
+                
+                #val_accuracy_batch = (c).float().mean()
+                # Calculating validation accuracy for each class
+                for l in range(0, label.size(0)):
+                    class_label = label[l]
+                    class_correct[class_label] = class_correct[class_label]+c[l]
+                    class_total[class_label] = class_total[class_label]+1
+                    
+                info = {
+                    'loss-Val': loss,
+                    'accuracy-val': val_accuracy
+                }
+                conf_matrix_val += confusion_matrix(preds_vq.cpu(), label.cpu(), labels=np.arange(3))
+#                np.save("./checkpoints/" + name_exp + "/conf_val_" + str(epoch),
+#                        conf_matrix_val)
+
+            score = np.concatenate(score_frag)
+
+            #self.print_log('\tMean {} loss of {} batches: {}.'.format(
+            #    ln, len(self.data_loader[ln]), np.mean(loss_value)))
+
+            #print("Total samples seen so far: ", val_total)
+
+            stats_val = 'Validation: Epoch [{}/{}], Samples [{}/{}], VAL ce: {}, VAL sm: {}'.format(
+                epoch,
+                self.arg.num_epoch,
+                val_correct,
+                val_total,
+                val_accuracy,
+                val_accuracy_1)
+
+            print(stats_val)
+            print("Here are the just predicted labels: ", preds)
+            print("Here are the correct labels: ", label)
+#            for i in range(0, self.arg.model_args['num_class']+1):
+#                if class_total[i] != 0:
+#                    print('Accuracy of {} : {} / {} = {} %'.format(i + 1,
+#                                                                   int(class_correct[i]), int(class_total[i]),
+#                                                                   int(100 * class_correct[i] /
+#                                                                       class_total[i])))
+            #
+            step = (epoch + 1) * (len(self.data_loader['train']) / (arg.optimize_every))
+
+#            for tag, value in info.items():
+#                #     # logger.scalar_summary(tag, value, epoch + 1)
+#                writer.add_scalar(tag, value, step)
+        
+        total_acc = ((val_correct + val_correct_1)/(val_total*2)) * 100
+        return round(total_acc,3)
+
+
+    def test(self, epoch, save_score=False, loader_name=['test']):
+        self.model.eval()
+        self.text_encoder.eval()
+        #self.print_log('Eval epoch: {}'.format(epoch + 1))
+        val_correct = 0
+        conf_matrix_test = 0
+        val_total = 0
+        val_correct_1 = 0
+        val_total_1 = 0
+        class_correct = list(0. for i in range(0, self.arg.model_args['num_class']+1))
+        class_total = list(0. for i in range(0, self.arg.model_args['num_class']+1))
+        
+        for ln in loader_name:
+            loss_value = []
+            score_frag = []
+            labels_list = []
+            preds_sm_list = []
+            preds_vq_list = []
+            for batch_idx, (data, label, name) in enumerate(self.data_loader[ln]):
+                
+                data = Variable(
+                    data.float().cuda(self.output_device),
+                    requires_grad=False)
+                label = Variable(
+                    label.long().cuda(self.output_device),
+                    requires_grad=False)
+                
+                with torch.no_grad():
+                    output_vq, feature, output_se, output_se, commit_loss = self.model(data, label, name)
+                    # text encoder similarity
+                    #text = ["Normal","Slight", "Mild"]
+                    text = ["Normal", "Mild", "Severe"]
+                    text_feature = self.text_encoder(text)
+                    feature = feature/feature.norm(dim=-1, keepdim=True)
+                    text_feature = text_feature/text_feature.norm(dim=-1, keepdim=True)
+                    similarity = (100.0 * feature @ text_feature.t())#.softmax(dim=-1)
+                    probs_sm = similarity.softmax(dim=-1)
+                    _, preds_sm = torch.max(probs_sm, 1)
+                    loss_sm = self.loss_sm(similarity, label)
+                    
+#                    # cumulative ordinal loss
+#                    cumulative_probs = torch.sigmoid(output_od)
+#                    preds_od = torch.sum(cumulative_probs > 0.5, dim=1).long()
+#                    loss_od = ordinal(output_od,label)
+
+#                    cumulative_probs = torch.sigmoid(output_vq)
+#                    preds_vq = torch.sum(cumulative_probs > 0.5, dim=1).long()
+#                    loss_vq = ordinal(output_vq,label)
+            
+                    # conventional cross entropy loss
+                    #_, preds_ce = torch.max(output_ce, 1)
+                    probs_vq = output_vq.softmax(dim=-1)
+                    _, preds_vq = torch.max(output_vq, 1)
+                    #loss_ce = self.loss_ce(output_ce,label)
+                    loss_vq = self.loss_ce(output_vq,label)
+                    
+                    loss = loss_vq
+                    preds = preds_vq
+
+                score_frag.append(output_se.data.cpu().numpy())
+                loss_value.append(loss.data.item())
+
+                labels_list.append(label)
+                preds_sm_list.append(probs_sm)
+                preds_vq_list.append(probs_vq)
+                labels = torch.cat(labels_list, dim=0)
+                preds_sm_labels = torch.cat(preds_sm_list, dim=0)
+                preds_vq_labels = torch.cat(preds_vq_list, dim=0)
+                
+                # accuracy calculation
+                val_total = val_total+label.size(0)
+                val_correct = val_correct+(preds == label).double().sum().item()
+                val_accuracy = (val_correct / val_total) * 100
+                                
+                val_total_1 = val_total_1+label.size(0)
+                val_correct_1 = val_correct_1+(preds_sm == label).double().sum().item()
+                val_accuracy_1 = (val_correct_1 / val_total_1) * 100
+
+                
+                c = (label == preds.squeeze()).float()
+                
+                #val_accuracy_batch = (c).float().mean()
+                # Calculating validation accuracy for each class
+                for l in range(0, label.size(0)):
+                    class_label = label[l]
+                    class_correct[class_label] = class_correct[class_label]+c[l]
+                    class_total[class_label] = class_total[class_label]+1
+                    
+                info = {
+                    'loss-Val': loss,
+                    'accuracy-val': val_accuracy
+                }
+                
+                if val_accuracy>=val_accuracy_1:
+                   conf_matrix_test += confusion_matrix(preds_vq.cpu(), label.cpu(), labels=np.arange(3))
+                   acc = val_accuracy
+                else:
+                   conf_matrix_test += confusion_matrix(preds_sm.cpu(), label.cpu(), labels=np.arange(3))
+                   acc = val_accuracy_1
+#                np.save("./checkpoints/" + name_exp + "/conf_val_" + str(epoch),
+#                        conf_matrix_val)
+
+            score = np.concatenate(score_frag)
+
+            #self.print_log('\tMean {} loss of {} batches: {}.'.format(
+            #    ln, len(self.data_loader[ln]), np.mean(loss_value)))
+
+            #print("Total samples seen so far: ", val_total)
+
+            stats_val = 'Test: Epoch [{}/{}], Samples [{}/{}], Test ce: {}, Test sm: {}'.format(
+                epoch,
+                self.arg.num_epoch,
+                val_correct,
+                val_total,
+                val_accuracy,
+                val_accuracy_1)
+
+            print(stats_val)
+            print("Here are the just predicted test labels: ", preds)
+            print("Here are the correct test labels: ", label)
+#            for i in range(0, self.arg.model_args['num_class']+1):
+#                if class_total[i] != 0:
+#                    print('Accuracy of {} : {} / {} = {} %'.format(i + 1,
+#                                                                   int(class_correct[i]), int(class_total[i]),
+#                                                                   int(100 * class_correct[i] /
+#                                                                       class_total[i])))
+            #
+            step = (epoch + 1) * (len(self.data_loader['train']) / (arg.optimize_every))
+
+#            for tag, value in info.items():
+#                #     # logger.scalar_summary(tag, value, epoch + 1)
+#                writer.add_scalar(tag, value, step)
+
+
+        return conf_matrix_test, round(acc,3), len(self.testset), labels, preds_sm_labels, preds_vq_labels
+        
+#    def test(self, epoch, save_score=True, loader_name=['test']):
+#        self.model.eval()
+#        self.print_log('Eval epoch: {}'.format(epoch + 1))
+#        val_correct = 0
+#        val_total = 0
+#        conf_matrix_test = 0
+#        class_correct = list(0. for i in range(0, self.arg.model_args['num_class']))
+#        class_total = list(0. for i in range(0, self.arg.model_args['num_class']))
+#
+#        for ln in loader_name:
+#            loss_value = []
+#            score_frag = []
+#            for batch_idx, (data, label, name) in enumerate(self.data_loader[ln]):
+#                data = Variable(
+#                    data.float().cuda(self.output_device),
+#                    requires_grad=False)
+#                label = Variable(
+#                    label.long().cuda(self.output_device),
+#                    requires_grad=False)
+#                name = name[0]
+#                with torch.no_grad():
+#
+#                    output = self.model(data, label, name)
+#                    loss = self.oloss(output, label)
+#                score_frag.append(output.data.cpu().numpy())
+#                loss_value.append(loss.data.item())
+#
+#                _, predictions = torch.max(output, 1)
+#                val_total =val_total+ label.size(0)
+#                val_correct = val_correct+(predictions == label).double().sum().item()
+#                val_accuracy = (val_correct / val_total) * 100
+#                c = (label == predictions.squeeze()).float()
+#                val_accuracy_batch = (c).float().mean()
+#
+#                # Calculating validation accuracy for each class
+#                for l in range(0, label.size(0)):
+#                    class_label = label[l]
+#                    class_correct[class_label - 1] = class_correct[class_label - 1] + c[l]
+#                    class_total[class_label - 1] = class_total[class_label - 1]+ 1
+#
+#                # print("Test accuracy on batch: ", testing_accuracy_batch)
+#                info = {
+#                    'loss-Val': loss,
+#                    'accuracy-test': val_accuracy
+#                }
+#                conf_matrix_test += confusion_matrix(predictions.cpu(), label.cpu(), labels=np.arange(self.arg.model_args['num_class']))
+#                np.save("./checkpoints/" + name_exp + "/confusion_test_" + str(epoch),
+#                        conf_matrix_test)
+#
+#            score = np.concatenate(score_frag)
+#
+#            # Added
+#            loss = np.mean(loss_value)
+##            score_dict = dict(
+##                zip(self.data_loader[ln].dataset.sample_name, score))
+##            if True:
+##                with open('{}/epoch{}_{}_score.pkl'.format(
+##                        self.arg.work_dir, epoch + 1, ln), 'wb') as f:
+##                    pickle.dump(score_dict, f)
+#
+#            self.print_log('\tMean {} loss of {} batches: {}.'.format(
+#                ln, len(self.data_loader[ln]), np.mean(loss_value)))
+#
+#            if arg.display_recall_precision:
+#                precision, recall = self.data_loader[ln].dataset.calculate_recall_precision(score)
+#                for i in range(len(precision)):
+#                    self.print_log('\tClass{} Precision: {:.2f}%, Recall: {:.2f}%'.format(
+#                        i + 1, 100 * precision[i], 100 * recall[i]
+#                    ))
+#
+#            for k in self.arg.show_topk:
+#                if arg.display_by_category:
+#                    accuracy = self.data_loader[ln].dataset.top_k_by_category(score, k)
+#                    for i in range(score.shape[1]):
+#                        self.print_log('\tClass{} Top{}: {:.2f}%'.format(
+#                            i + 1, k, 100 * accuracy[i]))
+#                    self.print_log('\tTop{}: {:.2f}%'.format(k, 100 * sum(accuracy) / len(accuracy)))
+#                else:
+#                    self.print_log('\tTop{}: {:.2f}%'.format(
+#                        k, 100 * self.data_loader[ln].dataset.top_k(score, k)))
+#
+#            print("Here are the just predicted labels: ", predictions)
+#            print("Here are the correct labels: ", label)
+#            print("Total samples seen so far: ", val_total)
+#
+#            stats_val = 'Testing: Epoch [{}/{}], Samples [{}/{}], Loss: {}, Testing Accuracy: {}'.format(
+#                epoch,
+#                self.arg.num_epoch,
+#                val_correct,
+#                val_total,
+#                loss.item(),
+#                val_accuracy)
+#
+#            print('\n' + stats_val)
+#
+#            for i in range(0, self.arg.model_args['num_class']):
+#                if class_total[i] != 0:
+#                    print('Accuracy of {} : {} / {} = {} %'.format(i + 1,
+#                                                                   int(class_correct[i]), int(class_total[i]),
+#                                                                   int(100 * class_correct[i] /
+#                                                                       class_total[i])))
+#
+#            # Calculates the confusion matrix
+#            # conf_matrix = confusion_matrix(predictions.cpu(), label.cpu())
+#            # print("The confusion matrix is: ", conf_matrix)
+#
+#            # Calculates and plots the confusion matrix
+#            # df_cm = pd.DataFrame(self.conf_matrix_val, index=[i for i in range(0, 60)],
+#            # columns=[i for i in range(0, 60)])
+#            # conf_fig = plt.figure(figsize=(13, 10))
+#            # plt.title("Confusion Matrix - Validation")
+#            # sn.heatmap(df_cm, annot=True)
+#            
+#            
+##            step = (epoch + 1) * (len(self.data_loader['train']))
+##
+##            for tag, value in info.items():
+##                #     # logger.scalar_summary(tag, value, epoch + 1)
+##                writer.add_scalar(tag, value, step)
+#
+#        print('\n' + stats_val)
+#        
+
+    def start(self, fold):
+
+        patience = 4
+        patient_counter = 1
+
+        #pytorch_total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        #layer_params = sum([p.view(-1).shape[0] for p in self.model.parameters()])
+        #print("Params: ", pytorch_total_params)
+        #print("Layer params: ", layer_params)
+#        overall_confusion_matrix = np.zeros((3, 3), dtype=int)
+        
+        for fold in range(fold, fold+1): 
+            self.load_model()
+            self.load_optimizer()
+            self.best_accuracy = 0
+            self.test_accuracy = 0
+            self.best_epoch = 0
+            best_confusion_matrix_vq = None
+            best_confusion_matrix_sm = None
+            print(f'Current fold is: {fold}')  
+            
+            self.load_data(fold)
+            
+            if self.arg.phase == 'train':
+                self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
+                for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
+    
+                    save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
+                            epoch + 1 == self.arg.num_epoch)
+                    eval_model = ((epoch + 1) % self.arg.eval_interval == 0) or (
+                            epoch + 1 == self.arg.num_epoch)
+                            
+                    train_acc = self.train(epoch, save_model=save_model)
+                    if eval_model:
+                        accuracy = self.val(
+                            epoch,
+                            save_score=self.arg.save_score,
+                            loader_name=['val'])
+                        
+                        if (accuracy <= self.best_accuracy):
+                            patient_counter += 1
+                        else:
+                            self.best_epoch = epoch
+                            self.best_accuracy = accuracy
+                            conf_matrix_test, self.test_accuracy, length, labels, preds_sm_labels, preds_vq_labels = self.test(
+                            epoch,
+                            save_score=self.arg.save_score,
+                            loader_name=['test'])
+                            best_confusion_matrix = conf_matrix_test
+                            patient_counter = 1
+                            
+
+                        print(patient_counter, '------')
+                        if patient_counter == 15:
+                            print("Early stopped!")
+                            break
+
+                    else:
+                        pass
+                    
+                    if patient_counter==4:
+                        file = open('/home/yande/ST-TR/records.txt', 'a')
+                        file.write(str(fold) + '  ' + str(patient_counter) + '  ' + str(self.best_accuracy) + '  ' + str(round(train_acc - self.best_accuracy,3)) + '  ' + str(round(train_acc - accuracy,3))                         + '  ' + str(self.test_accuracy))
+                        file.write('\n')
+                        file.close()
+                    
+                    print('best_acc:',self.best_accuracy, 'best_epoch:', self.best_epoch+1, 'test_acc:', self.test_accuracy)
+                        
+                print('test_acc:',self.test_accuracy, 'best_epoch:', self.best_epoch+1)
+                
+                file = open('/home/yande/ST-TR/best_acc.txt', 'a')
+                file.write(str(self.test_accuracy) + ' ' + str(self.best_epoch+1) + '  ' + str(length) + '  ' + str(fold) + '  ' + str(self.best_accuracy) + '  ' + str(round(train_acc - accuracy,3)))
+                file.write('\n')
+                file.close()
+                
+                print(labels.shape,preds_sm_labels.shape, preds_vq_labels.shape)
+                #np.save("./checkpoints/best_confusion_matrix_" + str(fold), best_confusion_matrix)
+        return best_confusion_matrix, labels, preds_sm_labels, preds_vq_labels
+#        overall_confusion_matrix += best_confusion_matrix
+#        np.save("./checkpoints/overall_confusion_matrix", overall_confusion_matrix)
+        
+#        elif self.arg.phase == 'test':
+#            if self.arg.weights is None:
+#                raise ValueError('Please appoint --weights.')
+#            self.arg.print_log = False
+#            self.print_log('Model:   {}.'.format(self.arg.model))
+#            self.print_log('Weights: {}.'.format(self.arg.weights))
+#            
+#            self.test(
+#                epoch=0, save_score=self.arg.save_score, loader_name=['test'])
+#            self.print_log('Done.\n')
+
+
+def str2bool(v):
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def import_class(name):
+    components = name.split('.')
+    mod = __import__(components[0])
+    for comp in components[1:]:
+        mod = getattr(mod, comp)
+    return mod
+
+
+if __name__ == '__main__':
+    overall_confusion_matrix = np.zeros((3, 3), dtype=int)
+    all_labels = []
+    all_preds_sm_labels = []
+    all_preds_vq_labels = []
+    
+    folds = [5,10,11,20]
+
+    for fold in range(1,24):
+        parser = get_parser()
+        p = parser.parse_args()
+        if p.config is not None:
+            with open(p.config, 'r') as f:
+                default_arg = yaml.safe_load(f)
+            key = vars(p).keys()
+            for k in default_arg.keys():
+                if k not in key:
+                    print('WRONG ARG: {}'.format(k))
+                    assert (k in key)
+            parser.set_defaults(**default_arg)
+        #set_seed(13696641)  # baseline 89.19
+        set_seed(1)  # ordical loss
+        arg = parser.parse_args()
+        processor = Processor(arg)
+        best_confusion_matrix, labels, preds_sm_labels, preds_vq_labels = processor.start(fold)
+        overall_confusion_matrix += best_confusion_matrix
+        all_labels.append(labels)
+        all_preds_sm_labels.append(preds_sm_labels)
+        all_preds_vq_labels.append(preds_vq_labels)
+        
+
+    np.save("./checkpoints/overall_confusion_matrix", overall_confusion_matrix)
+    all_labels = torch.cat(all_labels, dim=0)
+    all_preds_sm_labels = torch.cat(all_preds_sm_labels, dim=0)
+    all_preds_vq_labels = torch.cat(all_preds_vq_labels, dim=0)
+
+    np.save('./checkpoints/y_true.npy', all_labels.cpu())
+    np.save('./checkpoints/y_sm.npy', all_preds_sm_labels.cpu())
+    np.save('./checkpoints/y_vq.npy', all_preds_vq_labels.cpu())
