@@ -1,0 +1,93 @@
+# feeder
+feeder: nets.feeder.Feeder_c3d
+
+train_feeder_args:
+  data_path: /home/data/yande/pd/data(150)/poseformerv2_processing/PD_center_False/
+  label_path: /home/data/yande/pd/data(150)/poseformerv2_processing/PD_center_False/
+  random_shift: True
+  normalization: True
+  mirroring: True
+  vel: True
+  distance: False
+
+#val_feeder_args:
+#  data_path: /home/data/yande/pd/data/poseformerv2_processing/PD_center_False/
+#  label_path: /home/data/yande/pd/data/poseformerv2_processing/PD_center_False/
+#  random_shift: True
+#  normalization: True
+#  mirroring: True
+#  vel: True
+#  distance: False
+
+test_feeder_args:
+  data_path: /home/data/yande/pd/data(150)/poseformerv2_processing/PD_center_False/
+  label_path: /home/data/yande/pd/data(150)/poseformerv2_processing/PD_center_False/
+  vel: True
+  normalization: True
+  distance: False
+
+# model
+model: nets.net.ST_GCN
+phase: train
+
+model_args:
+  num_class: 3
+  channel: 3
+  window_size: 150
+  num_point: 17
+  num_person: 1
+  mask_learning: True            # reweight adjacency matrix in unit_gcn, graph convolution
+  
+  use_data_bn: True              # If true, the data will first input to a batch normalization layer before any network layer 
+  
+  attention: True                # If out_channel >= starting_ch and attention, use spatial self-attention 
+  only_attention: True           # If False, the output = spatial attention + graph convolution
+  adjacency: False                # If True, logits = logits+Adjacency, Default
+
+  tcn_attention: False            # If out_channel >= starting_ch and tcn_attention, use temporal self-attention
+  only_temporal_attention: False  # If False, the input will be feed to Unit2D, atten result = atten + self.tcn_conv(x_sum)
+  
+  skip_conn: False                # If true, result = result + x_sum
+  data_normalization: False      # Before both self-attention
+  bn_flag: True                  # After both self-attention
+  drop_connect: True             # Drop connect implementation to avoid overfitting when training, Both type
+  
+  weight_matrix: 2
+  attention_3: False
+  kernel_temporal: 9
+  multiscale: False
+  more_channels: False
+  double_channel: False
+
+  concat_original: True
+  all_layers: False
+  agcn: False
+  dv: 0.25
+  dk: 0.25
+  Nh: 8
+  n: 4
+  dim_block1: 10
+  dim_block2: 30
+  dim_block3: 75
+  relative: False               # Relative positional encoding is used or not, the network will be easier to be overfitting
+  graph: st_gcn.graph.c3d
+  visualization: False
+  graph_args:
+    labeling_mode: 'spatial'
+
+
+# optim
+scheduler: 1
+weight_decay: 0.0001
+base_lr: 0.002         # smaller number will be more likely to lead to overfitting
+step: [20,40]
+
+# training
+device: [3]
+batch_size: 16
+test_batch_size: 16
+num_epoch: 30
+nesterov: True
+
+
+
